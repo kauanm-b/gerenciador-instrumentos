@@ -1,0 +1,3 @@
+"""
+Módulo gui do projeto.
+""" 

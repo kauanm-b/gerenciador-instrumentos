@@ -1,0 +1,19 @@
+include README.md
+include LICENSE
+include requirements.txt
+include .env.example
+
+recursive-include src *
+recursive-include data *.gitkeep
+recursive-include logs *.gitkeep
+recursive-include backups *.gitkeep
+
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude *.pyo
+global-exclude .git
+global-exclude .env
+global-exclude .DS_Store
+global-exclude *.db
+global-exclude *.sqlite
+global-exclude *.sqlite3 
