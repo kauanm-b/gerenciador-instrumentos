@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from .models import Instrumento
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("instrumentos")
 
 class InstrumentoRepository:
     """Repositório para operações com instrumentos."""
@@ -20,11 +20,11 @@ class InstrumentoRepository:
             self.db.add(instrumento)
             self.db.commit()
             self.db.refresh(instrumento)
-            logger.info(f"Instrumento criado com sucesso: {instrumento.id}")
+            logger.info(f"✅ Instrumento criado com sucesso: {instrumento.id}")
             return instrumento
         except Exception as e:
             self.db.rollback()
-            logger.error(f"Erro ao criar instrumento: {e}")
+            logger.error(f"❌ Erro ao criar instrumento: {e}")
             raise
 
     def criar_em_massa(self, instrumentos: List[Instrumento]) -> List[Instrumento]:
@@ -32,11 +32,149 @@ class InstrumentoRepository:
         try:
             self.db.bulk_save_objects(instrumentos)
             self.db.commit()
-            logger.info(f"{len(instrumentos)} instrumentos criados com sucesso")
+            logger.info(f"✅ {len(instrumentos)} instrumentos criados com sucesso")
             return instrumentos
         except Exception as e:
             self.db.rollback()
-            logger.error(f"Erro ao criar instrumentos em massa: {e}")
+            logger.error(f"❌ Erro ao criar instrumentos em massa: {e}")
+            raise
+
+    def limpar_tabela(self) -> None:
+        """Limpa todos os registros da tabela de instrumentos."""
+        try:
+            self.db.query(Instrumento).delete()
+            self.db.commit()
+            logger.info("🧹 Tabela de instrumentos limpa com sucesso")
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"❌ Erro ao limpar tabela de instrumentos: {e}")
+            raise
+
+    def sincronizar_dados(self, instrumentos_json: List[Dict[str, Any]]) -> Dict[str, int]:
+        """
+        Sincroniza os dados do JSON com o banco de dados.
+        
+        Args:
+            instrumentos_json: Lista de dicionários com dados dos instrumentos do JSON
+            
+        Returns:
+            Dict com estatísticas de sincronização (adicionados, atualizados, removidos)
+        """
+        try:
+            # Obter todos os instrumentos existentes no banco
+            instrumentos_existentes = self.db.query(Instrumento).all()
+            logger.info(f"📊 Encontrados {len(instrumentos_existentes)} instrumentos no banco de dados")
+            
+            # Criar dicionários para facilitar a busca
+            instrumentos_por_numero_serie = {inst.numero_serie: inst for inst in instrumentos_existentes if inst.numero_serie}
+            instrumentos_por_nome = {inst.nome: inst for inst in instrumentos_existentes if inst.nome}
+            
+            # Contadores para estatísticas
+            adicionados = 0
+            atualizados = 0
+            removidos = 0
+            avisos = 0
+            
+            # Conjunto para rastrear instrumentos processados
+            processados = set()
+            
+            # Processar cada instrumento do JSON
+            for inst_json in instrumentos_json:
+                nome = inst_json.get('Instrumento')
+                numero_serie = inst_json.get('Número de Série')
+                
+                # Tentar encontrar o instrumento pelo número de série ou nome
+                instrumento = None
+                if numero_serie and numero_serie in instrumentos_por_numero_serie:
+                    instrumento = instrumentos_por_numero_serie[numero_serie]
+                elif nome and nome in instrumentos_por_nome:
+                    instrumento = instrumentos_por_nome[nome]
+                
+                # Converter a data de validade se existir
+                validade = None
+                if inst_json.get('ValidadeCertificado') and inst_json.get('ValidadeCertificado') != '-':
+                    try:
+                        from datetime import datetime
+                        validade = datetime.strptime(inst_json['ValidadeCertificado'], '%Y-%m-%d').date()
+                    except ValueError:
+                        logger.warning(f"⚠️ Data de validade inválida para o instrumento {nome}: {inst_json.get('ValidadeCertificado')}")
+                        avisos += 1
+                
+                if instrumento:
+                    # Atualizar instrumento existente
+                    instrumento.spg = inst_json.get('SPG')
+                    instrumento.ensaio = inst_json.get('Ensaio')
+                    instrumento.nome = nome
+                    instrumento.tipo = inst_json.get('Tipo')
+                    instrumento.marca = inst_json.get('Marca')
+                    instrumento.modelo = inst_json.get('Modelo')
+                    instrumento.numero_serie = numero_serie
+                    instrumento.localizacao = inst_json.get('Localização')
+                    instrumento.faixa = inst_json.get('Faixa')
+                    instrumento.unidade = inst_json.get('Unidade')
+                    instrumento.status = inst_json.get('Status')
+                    instrumento.classe = inst_json.get('Classe')
+                    instrumento.certificado = inst_json.get('Certificado')
+                    instrumento.descricao = inst_json.get('Descrição')
+                    instrumento.validade_certificado = validade
+                    instrumento.criterio_aceitacao = inst_json.get('CriterioAceitacao')
+                    instrumento.intervalo_operacao = inst_json.get('IntervaloOperacao')
+                    
+                    atualizados += 1
+                else:
+                    # Criar novo instrumento
+                    novo_instrumento = Instrumento(
+                        spg=inst_json.get('SPG'),
+                        ensaio=inst_json.get('Ensaio'),
+                        nome=nome,
+                        tipo=inst_json.get('Tipo'),
+                        marca=inst_json.get('Marca'),
+                        modelo=inst_json.get('Modelo'),
+                        numero_serie=numero_serie,
+                        localizacao=inst_json.get('Localização'),
+                        faixa=inst_json.get('Faixa'),
+                        unidade=inst_json.get('Unidade'),
+                        status=inst_json.get('Status'),
+                        classe=inst_json.get('Classe'),
+                        certificado=inst_json.get('Certificado'),
+                        descricao=inst_json.get('Descrição'),
+                        validade_certificado=validade,
+                        criterio_aceitacao=inst_json.get('CriterioAceitacao'),
+                        intervalo_operacao=inst_json.get('IntervaloOperacao')
+                    )
+                    self.db.add(novo_instrumento)
+                    adicionados += 1
+                
+                # Marcar como processado
+                if numero_serie:
+                    processados.add(numero_serie)
+                elif nome:
+                    processados.add(nome)
+            
+            # Identificar instrumentos a serem removidos (não estão mais no JSON)
+            for inst in instrumentos_existentes:
+                identificador = inst.numero_serie or inst.nome
+                if identificador and identificador not in processados:
+                    self.db.delete(inst)
+                    removidos += 1
+            
+            # Commit das alterações
+            self.db.commit()
+            
+            # Retornar estatísticas
+            estatisticas = {
+                "adicionados": adicionados,
+                "atualizados": atualizados,
+                "removidos": removidos,
+                "avisos": avisos
+            }
+            
+            logger.info(f"✅ Sincronização concluída: {adicionados} adicionados, {atualizados} atualizados, {removidos} removidos, {avisos} avisos")
+            return estatisticas
+            
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"❌ Erro ao sincronizar dados: {e}")
             raise
 
     def obter_por_id(self, instrumento_id: int) -> Optional[Instrumento]:
@@ -56,11 +194,11 @@ class InstrumentoRepository:
                     setattr(instrumento, chave, valor)
                 self.db.commit()
                 self.db.refresh(instrumento)
-                logger.info(f"Instrumento {instrumento_id} atualizado com sucesso")
+                logger.info(f"✅ Instrumento {instrumento_id} atualizado com sucesso")
             return instrumento
         except Exception as e:
             self.db.rollback()
-            logger.error(f"Erro ao atualizar instrumento {instrumento_id}: {e}")
+            logger.error(f"❌ Erro ao atualizar instrumento {instrumento_id}: {e}")
             raise
 
     def deletar(self, instrumento_id: int) -> bool:
@@ -70,12 +208,12 @@ class InstrumentoRepository:
             if instrumento:
                 self.db.delete(instrumento)
                 self.db.commit()
-                logger.info(f"Instrumento {instrumento_id} deletado com sucesso")
+                logger.info(f"✅ Instrumento {instrumento_id} deletado com sucesso")
                 return True
             return False
         except Exception as e:
             self.db.rollback()
-            logger.error(f"Erro ao deletar instrumento {instrumento_id}: {e}")
+            logger.error(f"❌ Erro ao deletar instrumento {instrumento_id}: {e}")
             raise
 
     def obter_por_spg(self, spg: str) -> List[Instrumento]:
@@ -107,5 +245,5 @@ class InstrumentoRepository:
                 instrumentos.append(instrumento)
             return self.criar_em_massa(instrumentos)
         except Exception as e:
-            logger.error(f"Erro ao importar dados JSON: {e}")
+            logger.error(f"❌ Erro ao importar dados JSON: {e}")
             raise 
